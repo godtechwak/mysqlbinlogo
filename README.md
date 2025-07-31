@@ -1,7 +1,9 @@
 # mysqlbinlogo
 
 A tool to analyze Aurora MySQL Binary Logs and identify SQL statements executed within a specific time frame.
-<img width="1024" height="1024" alt="고퍼와 돌고래 퍼즐" src="https://github.com/user-attachments/assets/64e8bc98-dc9f-44f3-9df7-d633e5b60b30" />
+<img width="1536" height="1024" alt="mysqlbinlogo" src="https://github.com/user-attachments/assets/ae15478a-ba9f-413c-b751-f30c12ebe34d" />
+
+
 
 ## 🎯 Key Features
 
