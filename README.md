@@ -5,7 +5,7 @@ A tool to analyze Aurora MySQL Binary Logs and identify SQL statements executed 
 
 
 
-## 🎯 Key Features
+## Key Features
 
 * **Time Range Search**: Extract only SQL statements for the exact start and end times you specify
 * **Parallel Processing**: Fast analysis of large binary logs using multiple workers
