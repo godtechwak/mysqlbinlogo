@@ -208,6 +208,7 @@ func (ba *BinlogAnalyzer) Analyze() error {
 					bar.Describe("분석 완료")
 				}
 			}
+			fmt.Printf("\n")
 		}
 	} else {
 		fmt.Printf("결과 정리 중... (총 %d개 이벤트)\n", len(allEvents))
@@ -330,7 +331,8 @@ func (ba *BinlogAnalyzer) outputResults(events []config.SQLEvent) error {
 	green := "\033[32m"
 	reset := "\033[0m"
 
-	fmt.Fprintf(output, "%s\n# Binary Log Analysis Results\n", green)
+	fmt.Printf("%s", green)
+	fmt.Fprintf(output, "# Binary Log Analysis Results\n")
 	fmt.Fprintf(output, "# Time Range: %s ~ %s\n",
 		ba.Config.StartTime.Format("2006-01-02 15:04:05"),
 		ba.Config.EndTime.Format("2006-01-02 15:04:05"))
@@ -348,7 +350,7 @@ func (ba *BinlogAnalyzer) outputResults(events []config.SQLEvent) error {
 
 		fmt.Fprintf(output, "%s;\n\n", event.SQL)
 	}
-	fmt.Fprintf(output, "%s", reset)
+	fmt.Printf("%s", reset)
 
 	logrus.Infof("Analysis complete: %d SQL events", len(events))
 	if ba.Config.OutputFile != "" {
