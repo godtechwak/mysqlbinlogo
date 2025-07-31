@@ -15,8 +15,9 @@ A tool to analyze Aurora MySQL Binary Logs and identify SQL statements executed 
 ## Installation
 
 ```bash
-cd mysqlbinlogo
-go build -o mysqlbinlogo
+go mod init mysqlbinlogo
+go mod tidy
+go build .
 ```
 
 ## Usage
@@ -29,8 +30,7 @@ go build -o mysqlbinlogo
     --user "your_username" \
     --password "your_password" \
     --start-time "2024-01-15 09:00:00" \
-    --end-time "2024-01-15 10:00:00" \
-    --verbose
+    --end-time "2024-01-15 10:00:00"
 ```
 
 ### Specify Output File
@@ -62,7 +62,6 @@ go build -o mysqlbinlogo
 ### High-Performance Parallel Processing
 
 ```bash
-# Parallel processing with 5 workers (reduces 12 files from 20s → 4s)
 ./mysqlbinlogo \
     --host your-aurora-endpoint.amazonaws.com \
     --user admin \
@@ -93,23 +92,31 @@ The output is similar to `mysqlbinlog`:
 
 ```sql
 # Binary Log Analysis Results
-# Time Range: 2024-01-15 10:00:00 ~ 2024-01-15 11:00:00
-# Total Events: 150
+# Time Range: 2025-07-31 13:36:01 ~ 2025-07-31 13:38:10
+# Total Events: 3
 
-# at 4567
-#240115 10:15:30 server id 1  end_log_pos 4623
-use mydb;
-INSERT INTO users (name, email) VALUES ('John', 'john@example.com');
+# at 803095
+#250731 22:36:42 server id 1776511979  end_log_pos 803095
+# Binary Log File: mysql-bin-changelog.000015
+use test;
+UPDATE test.album SET col_1=NULL (was 1), col_4='100.00' (was NULL);
 
-# at 4623
-#240115 10:16:45 server id 1  end_log_pos 4789
-use mydb;
-UPDATE users SET status = 'active' WHERE id = 123 -- 1 row(s) affected;
+# at 803439
+#250731 22:36:56 server id 1776511979  end_log_pos 803439
+# Binary Log File: mysql-bin-changelog.000015
+use test;
+DELETE FROM test.album WHERE col_1=5;
+
+# at 803831
+#250731 22:37:10 server id 1776511979  end_log_pos 803831
+# Binary Log File: mysql-bin-changelog.000015
+use test;
+INSERT INTO test.album VALUES (100, 'silver', 'silverlee', '200.00');
 ```
 
 ## Use Cases
 
-### 1. Point-in-Time Recovery
+### Point-in-Time Recovery
 
 Check what changes occurred before restoring the database to a specific point in time:
 
@@ -123,7 +130,7 @@ Check what changes occurred before restoring the database to a specific point in
     --output before-incident.sql
 ```
 
-### 2. Incident Analysis
+### Incident Analysis
 
 Review all SQL statements executed during a specific time frame of a system failure or data anomaly:
 
@@ -136,20 +143,6 @@ Review all SQL statements executed during a specific time frame of a system fail
     --end-time "2024-01-15 14:35:00" \
     --output "analysis_result.sql" \
     --verbose
-```
-
-### 3. Auditing and Tracking
-
-Track all data changes executed within a specific time frame:
-
-```bash
-./mysqlbinlogo \
-    --host aurora-cluster.amazonaws.com \
-    --user admin \
-    --password mypassword \
-    --start-time "2024-01-15 00:00:00" \
-    --end-time "2024-01-15 23:59:59" \
-    --output daily-changes.sql
 ```
 
 ## Performance Optimization
@@ -171,40 +164,3 @@ Track all data changes executed within a specific time frame:
 * Aurora MySQL Binary Logs must be enabled
 * Adequate binary log retention period required
 * Stable network connection required for large binary log files
-
-## Troubleshooting
-
-### Connection Error
-
-```
-MySQL connection failed: dial tcp: connection refused
-```
-
-* Verify host address and port
-* Check MySQL port in the security group
-
-### Permission Error
-
-```
-Failed to retrieve binary log files: access denied
-```
-
-* Ensure user has REPLICATION SLAVE privilege
-* Example: `GRANT REPLICATION SLAVE ON *.* TO 'user'@'%';`
-
-### Time Range Error
-
-```
-No binary log files found for the specified time range
-```
-
-* Check binary log retention period
-* Confirm the specified time range is within the available binary logs
-
-## Contributing
-
-Feel free to suggest issues or improvements at any time.
-
-## License
-
-MIT License
