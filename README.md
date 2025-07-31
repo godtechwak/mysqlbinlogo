@@ -26,7 +26,7 @@ go build .
 
 ```bash
 ./mysqlbinlogo \
-    --host "your-aurora-host.rds.amazonaws.com" \
+    --host "aurora-cluster.cluster-xxxxx.ap-northeast-2.rds.amazonaws.com" \
     --user "your_username" \
     --password "your_password" \
     --start-time "2024-01-15 09:00:00" \
@@ -37,10 +37,10 @@ go build .
 
 ```bash
 ./mysqlbinlogo \
-    --host your-aurora-endpoint.amazonaws.com \
+    --host "aurora-cluster.cluster-xxxxx.ap-northeast-2.rds.amazonaws.com" \
     --port 3306 \
-    --user admin \
-    --password your-password \
+    --user "admin" \
+    --password "your_password" \
     --start-time "2024-01-15 10:00:00" \
     --end-time "2024-01-15 11:00:00" \
     --output /tmp/binlog-analysis.sql
@@ -50,10 +50,10 @@ go build .
 
 ```bash
 ./mysqlbinlogo \
-    --host your-aurora-endpoint.amazonaws.com \
+    --host "aurora-cluster.cluster-xxxxx.ap-northeast-2.rds.amazonaws.com" \
     --port 3306 \
-    --user admin \
-    --password your-password \
+    --user "admin" \
+    --password "your_password" \
     --start-time "2024-01-15 10:00:00" \
     --end-time "2024-01-15 11:00:00" \
     --verbose
@@ -63,9 +63,9 @@ go build .
 
 ```bash
 ./mysqlbinlogo \
-    --host your-aurora-endpoint.amazonaws.com \
-    --user admin \
-    --password your-password \
+    --host "aurora-cluster.cluster-xxxxx.ap-northeast-2.rds.amazonaws.com" \
+    --user "admin" \
+    --password "your_password" \
     --start-time "2024-01-15 10:00:00" \
     --end-time "2024-01-15 11:00:00" \
     --workers 5 \
@@ -122,12 +122,12 @@ Check what changes occurred before restoring the database to a specific point in
 
 ```bash
 ./mysqlbinlogo \
-    --host aurora-cluster.amazonaws.com \
-    --user admin \
-    --password mypassword \
+    --host "aurora-cluster.cluster-xxxxx.ap-northeast-2.rds.amazonaws.com" \
+    --user "admin" \
+    --password "your_password" \
     --start-time "2024-01-15 09:55:00" \
     --end-time "2024-01-15 10:05:00" \
-    --output before-incident.sql
+    --output /tmp/before-incident.sql
 ```
 
 ### Incident Analysis
@@ -136,12 +136,12 @@ Review all SQL statements executed during a specific time frame of a system fail
 
 ```bash
 ./mysqlbinlogo \
-    --host "aurora-cluster.cluster-xxxxx.us-west-2.rds.amazonaws.com" \
+    --host "aurora-cluster.cluster-xxxxx.ap-northeast-2.rds.amazonaws.com" \
     --user "admin" \
     --password "your_password" \
     --start-time "2024-01-15 14:30:00" \
     --end-time "2024-01-15 14:35:00" \
-    --output "analysis_result.sql" \
+    --output /tmp/analysis_result.sql \
     --verbose
 ```
 
