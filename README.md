@@ -1,24 +1,28 @@
+Here’s the English-translated version of your README:
+
+---
+
 # mysqlbinlogo
 
-Aurora MySQL의 Binary Log를 분석하여 특정 시간대에 실행된 SQL 명령을 찾아내는 도구입니다.
+A tool to analyze Aurora MySQL Binary Logs and identify SQL statements executed within a specific time frame.
 
-## 🎯 주요 특징
+## 🎯 Key Features
 
-- **시간 범위 검색**: 정확한 시작/종료 시간 지정으로 원하는 구간의 SQL만 추출
-- **병렬 처리**: 다중 워커를 통한 빠른 대용량 binary log 분석
-- **효율적 파일 선별**: 시간 기반 pre-filtering으로 불필요한 파일 스킵
-- **다양한 출력 형식**: 표준 출력 또는 파일로 결과 저장
+* **Time Range Search**: Extract only SQL statements for the exact start and end times you specify
+* **Parallel Processing**: Fast analysis of large binary logs using multiple workers
+* **Efficient File Selection**: Time-based pre-filtering to skip unnecessary files
+* **Flexible Output**: Save results to stdout or an output file
 
-## 설치
+## Installation
 
 ```bash
 cd mysqlbinlogo
 go build -o mysqlbinlogo
 ```
 
-## 사용법
+## Usage
 
-### 기본 사용법
+### Basic Usage
 
 ```bash
 ./mysqlbinlogo \
@@ -30,7 +34,7 @@ go build -o mysqlbinlogo
     --verbose
 ```
 
-### 출력 파일 지정
+### Specify Output File
 
 ```bash
 ./mysqlbinlogo \
@@ -43,7 +47,7 @@ go build -o mysqlbinlogo
     --output /tmp/binlog-analysis.sql
 ```
 
-### 상세 출력 모드
+### Detailed Output Mode
 
 ```bash
 ./mysqlbinlogo \
@@ -56,10 +60,10 @@ go build -o mysqlbinlogo
     --verbose
 ```
 
-### 고성능 병렬 처리
+### High-Performance Parallel Processing
 
 ```bash
-# 5개 워커로 병렬 처리 (12개 파일을 20초 → 4초로 단축)
+# Parallel processing with 5 workers (reduces 12 files from 20s → 4s)
 ./mysqlbinlogo \
     --host your-aurora-endpoint.amazonaws.com \
     --user admin \
@@ -70,23 +74,23 @@ go build -o mysqlbinlogo
     --verbose
 ```
 
-## 옵션
+## Options
 
-| 옵션          | 축약 | 설명                           | 필수 |
-|---------------|------|--------------------------------|------|
-| `--host`      | `-H` | MySQL 호스트 주소              | ✅   |
-| `--port`      | `-P` | MySQL 포트 (기본값: 3306)      | ❌   |
-| `--user`      | `-u` | MySQL 사용자명                 | ✅   |
-| `--password`  | `-p` | MySQL 비밀번호                 | ✅   |
-| `--start-time`| `-s` | 시작 시간 (YYYY-MM-DD HH:MM:SS)| ✅   |
-| `--end-time`  | `-e` | 종료 시간 (YYYY-MM-DD HH:MM:SS)| ✅   |
-| `--output`    | `-o` | 결과 파일 경로                 | ❌   |
-| `--verbose`   | `-v` | 상세 출력                      | ❌   |
-| `--workers`   | `-w` | 병렬 처리 워커 수 (기본값: 3)  | ❌   |
+| Option         | Short | Description                             | Required |
+| -------------- | ----- | --------------------------------------- | -------- |
+| `--host`       | `-H`  | MySQL host address                      | ✅        |
+| `--port`       | `-P`  | MySQL port (default: 3306)              | ❌        |
+| `--user`       | `-u`  | MySQL username                          | ✅        |
+| `--password`   | `-p`  | MySQL password                          | ✅        |
+| `--start-time` | `-s`  | Start time (YYYY-MM-DD HH\:MM\:SS)      | ✅        |
+| `--end-time`   | `-e`  | End time (YYYY-MM-DD HH\:MM\:SS)        | ✅        |
+| `--output`     | `-o`  | Output file path                        | ❌        |
+| `--verbose`    | `-v`  | Show detailed output                    | ❌        |
+| `--workers`    | `-w`  | Number of parallel workers (default: 3) | ❌        |
 
-## 출력 형식
+## Output Format
 
-mysqlbinlog와 동일한 형식으로 출력됩니다:
+The output is similar to `mysqlbinlog`:
 
 ```sql
 # Binary Log Analysis Results
@@ -104,11 +108,11 @@ use mydb;
 UPDATE users SET status = 'active' WHERE id = 123 -- 1 row(s) affected;
 ```
 
-## 사용 사례
+## Use Cases
 
-### 1. 특정 시점 복원
+### 1. Point-in-Time Recovery
 
-데이터베이스를 특정 시점으로 복원하기 전에 해당 시점에 어떤 변경사항이 있었는지 확인:
+Check what changes occurred before restoring the database to a specific point in time:
 
 ```bash
 ./mysqlbinlogo \
@@ -120,9 +124,9 @@ UPDATE users SET status = 'active' WHERE id = 123 -- 1 row(s) affected;
     --output before-incident.sql
 ```
 
-### 2. 문제 발생 시점 분석
+### 2. Incident Analysis
 
-시스템 장애나 데이터 이상이 발생했을 때 해당 시간대의 모든 SQL 명령 확인:
+Review all SQL statements executed during a specific time frame of a system failure or data anomaly:
 
 ```bash
 ./mysqlbinlogo \
@@ -135,9 +139,9 @@ UPDATE users SET status = 'active' WHERE id = 123 -- 1 row(s) affected;
     --verbose
 ```
 
-### 3. 감사 및 추적
+### 3. Auditing and Tracking
 
-특정 시간대에 실행된 모든 데이터 변경 작업 추적:
+Track all data changes executed within a specific time frame:
 
 ```bash
 ./mysqlbinlogo \
@@ -149,53 +153,59 @@ UPDATE users SET status = 'active' WHERE id = 123 -- 1 row(s) affected;
     --output daily-changes.sql
 ```
 
-## 성능 최적화
+## Performance Optimization
 
-- **시간 범위 최소화**: 필요한 최소한의 시간 범위만 지정
-- **스마트 파일 선별**: Binary Log 파일의 시간 범위를 먼저 확인하여 불필요한 파일 스킵
-- **병렬 처리**: `--workers` 옵션으로 여러 파일을 동시에 검사 (최대 5배 성능 향상)
-- **역방향 검색**: 최근 문제 조사 시 `--reverse` 옵션으로 최신 파일부터 효율적 검색
-- **조기 종료**: 시간 범위를 벗어난 파일 발견 시 자동으로 검색 중단
+* **Minimize Time Range**: Specify the smallest time range necessary
+* **Smart File Filtering**: Check binary log file time ranges first to skip unnecessary files
+* **Parallel Processing**: Use `--workers` to analyze multiple files concurrently (up to 5x speed)
+* **Early Stop**: Automatically stop processing when files exceed the time range
 
-### 워커 수 가이드
-- **2-5개 파일**: `--workers 1` (순차 처리)
-- **6-10개 파일**: `--workers 3` (기본값)  
-- **11-20개 파일**: `--workers 5` (권장)
-- **20개 이상**: `--workers 8` (최대)
+### Worker Count Guide
 
-## 제한사항
+* **2–5 files**: `--workers 1` (sequential)
+* **6–10 files**: `--workers 3` (default)
+* **11–20 files**: `--workers 5` (recommended)
+* **20+ files**: `--workers 8` (max)
 
-- Aurora MySQL의 Binary Log가 활성화되어 있어야 함
-- 충분한 Binary Log retention 시간이 설정되어 있어야 함
-- 네트워크 연결이 안정적이어야 함 (큰 Binary Log 파일 처리 시)
+## Limitations
 
-## 트러블슈팅
+* Aurora MySQL Binary Logs must be enabled
+* Adequate binary log retention period required
+* Stable network connection required for large binary log files
 
-### 연결 오류
+## Troubleshooting
+
+### Connection Error
+
 ```
-MySQL 연결 실패: dial tcp: connection refused
+MySQL connection failed: dial tcp: connection refused
 ```
-- 호스트 주소와 포트가 올바른지 확인
-- 보안 그룹에서 MySQL 포트가 열려있는지 확인
 
-### 권한 오류
+* Verify host address and port
+* Check MySQL port in the security group
+
+### Permission Error
+
 ```
-Binary log 파일 목록 가져오기 실패: access denied
+Failed to retrieve binary log files: access denied
 ```
-- 사용자에게 REPLICATION SLAVE 권한이 있는지 확인
-- `GRANT REPLICATION SLAVE ON *.* TO 'user'@'%';`
 
-### 시간 범위 오류
+* Ensure user has REPLICATION SLAVE privilege
+* Example: `GRANT REPLICATION SLAVE ON *.* TO 'user'@'%';`
+
+### Time Range Error
+
 ```
-지정된 시간대에 해당하는 binary log 파일을 찾을 수 없습니다
+No binary log files found for the specified time range
 ```
-- Binary Log retention 기간 확인
-- 지정한 시간이 현재 Binary Log 범위 내에 있는지 확인
 
-## 기여
+* Check binary log retention period
+* Confirm the specified time range is within the available binary logs
 
-이슈나 개선사항이 있으시면 언제든지 제안해 주세요.
+## Contributing
 
-## 라이선스
+Feel free to suggest issues or improvements at any time.
 
-MIT License 
+## License
+
+MIT License
