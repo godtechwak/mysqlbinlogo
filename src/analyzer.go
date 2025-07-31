@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 
 	"mysqlbinlogo/config"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/schollz/progressbar/v3"
 )
 
 // BinlogAnalyzer Binary log 분석기
@@ -22,67 +25,222 @@ type BinlogAnalyzer struct {
 // Analyze Binary log 분석 실행
 func (ba *BinlogAnalyzer) Analyze() error {
 	if ba.Config.Verbose {
-		logrus.Debugf("MySQL 서버에 연결 중... %s:%d\n", ba.Config.Host, ba.Config.Port)
+		// verbose 모드에서는 로딩바 대신 상세 로그 출력
+		fmt.Printf("분석 시작: %s ~ %s\n",
+			ba.Config.StartTime.Format("2006-01-02 15:04:05"),
+			ba.Config.EndTime.Format("2006-01-02 15:04:05"))
+		fmt.Printf("MySQL 서버에 연결 중... %s:%d\n", ba.Config.Host, ba.Config.Port)
 	}
 
-	// MySQL 연결
+	// verbose 모드가 아닐 때만 로딩바 사용
+	var bar *progressbar.ProgressBar
+	if !ba.Config.Verbose {
+		// 단일 진행률바 (100단계 = 1%씩)
+		bar = progressbar.NewOptions(100,
+			progressbar.OptionSetDescription("분석 진행률"),
+			progressbar.OptionSetWidth(50),
+			progressbar.OptionShowCount(),
+			progressbar.OptionEnableColorCodes(false),
+			progressbar.OptionSetTheme(progressbar.Theme{
+				Saucer:        "█",
+				SaucerHead:    "█",
+				SaucerPadding: "░",
+				BarStart:      "[",
+				BarEnd:        "]",
+			}),
+		)
+	}
+
+	// 1. MySQL 연결 (5%)
+	if !ba.Config.Verbose {
+		for i := 0; i < 3; i++ {
+			bar.Add(1)
+			bar.Describe("MySQL 연결 중...")
+		}
+	}
+
 	if err := ba.connect(); err != nil {
 		return fmt.Errorf("MySQL 연결 실패: %v", err)
 	}
 	defer ba.conn.Close()
 
-	// Binary log 파일 목록 가져오기
+	if !ba.Config.Verbose {
+		for i := 0; i < 2; i++ {
+			bar.Add(1)
+			bar.Describe("MySQL 연결 완료")
+		}
+	} else {
+		fmt.Println("MySQL 연결 완료")
+	}
+
+	// 2. Binary log 파일 목록 가져오기 및 대상 파일 검색 (10%)
+	if !ba.Config.Verbose {
+		for i := 0; i < 5; i++ {
+			bar.Add(1)
+			bar.Describe("바이너리 로그 파일 검색 중...")
+		}
+	} else {
+		fmt.Println("바이너리 로그 파일 검색 중...")
+	}
+
 	binlogFiles, err := ba.getBinlogFiles()
 	if err != nil {
 		return fmt.Errorf("binary log 파일 목록 가져오기 실패: %v", err)
 	}
 
 	if ba.Config.Verbose {
-		logrus.Debugf("총 %d개의 binary log 파일을 찾았습니다.\n", len(binlogFiles))
+		fmt.Printf("총 %d개의 binary log 파일을 찾았습니다.\n", len(binlogFiles))
 	}
 
-	// 시간대에 맞는 파일 찾기 (일관된 처리 방식)
+	// 시간대에 맞는 파일 찾기
 	timeFinder := NewBinlogTimeFinder(ba.conn, ba.Config)
 
 	if ba.Config.Verbose {
-		logrus.Debugf("파일 검색 설정 - Workers: %d\n", ba.Config.Workers)
+		fmt.Printf("파일 검색 설정 - Workers: %d\n", ba.Config.Workers)
 	}
 
 	targetFiles, err := timeFinder.FindTargetFilesParallel(binlogFiles)
 	if err != nil {
 		return fmt.Errorf("대상 파일 찾기 실패: %v", err)
 	}
+
+	if !ba.Config.Verbose {
+		for i := 0; i < 5; i++ {
+			bar.Add(1)
+			bar.Describe("파일 검색 완료")
+		}
+	} else {
+		fmt.Println("파일 검색 완료")
+	}
+
 	if len(targetFiles) == 0 {
-		return fmt.Errorf("지정된 시간대(%s ~ %s)에 해당하는 binary log 파일을 찾을 수 없습니다",
+		if !ba.Config.Verbose {
+			bar.Finish()
+		}
+		fmt.Printf("\n\n지정된 시간대(%s ~ %s)에 해당하는 binary log 파일을 찾을 수 없습니다\n",
 			ba.Config.StartTime.Format("2006-01-02 15:04:05"),
 			ba.Config.EndTime.Format("2006-01-02 15:04:05"))
+		return nil
 	}
 
 	if ba.Config.Verbose {
-		logrus.Debugf("분석 대상 파일: %d개 (처리 순서)\n", len(targetFiles))
+		fmt.Printf("분석 대상 파일: %d개 (처리 순서)\n", len(targetFiles))
 		for i, file := range targetFiles {
-			logrus.Debugf("  %d. %s (크기: %d bytes)\n", i+1, file.Name, file.Size)
+			fmt.Printf("  %d. %s (크기: %d bytes)\n", i+1, file.Name, file.Size)
 		}
 	}
 
-	// SQL 이벤트 추출
+	// 3. SQL 이벤트 추출 (80%)
 	sqlExtractor := NewSQLExtractor(ba.Config)
 	defer sqlExtractor.Close()
 
-	events, err := sqlExtractor.ExtractSQLEvents(targetFiles)
-	if err != nil {
-		return fmt.Errorf("SQL 이벤트 추출 실패: %v", err)
+	var allEvents []config.SQLEvent
+
+	if !ba.Config.Verbose {
+		progressPerFile := 80 / len(targetFiles) // 80%를 파일 개수로 나눔
+		if progressPerFile < 5 {
+			progressPerFile = 5
+		}
+
+		for i, file := range targetFiles {
+			// 파일 처리 시작 (지연 없음)
+			for j := 0; j < progressPerFile/2; j++ {
+				bar.Add(1)
+				bar.Describe(fmt.Sprintf("파일 처리 중: %s (%d/%d)", file.Name, i+1, len(targetFiles)))
+			}
+
+			events, err := sqlExtractor.ExtractFromSingleFile(file)
+
+			if err != nil {
+				// 에러는 조용히 무시
+			} else {
+				allEvents = append(allEvents, events...)
+			}
+
+			// 파일 처리 완료 (지연 없음)
+			eventCount := 0
+			if events != nil {
+				eventCount = len(events)
+			}
+			for j := 0; j < progressPerFile/2; j++ {
+				bar.Add(1)
+				bar.Describe(fmt.Sprintf("파일 완료: %s (%d개 이벤트)", file.Name, eventCount))
+			}
+		}
+	} else {
+		// verbose 모드에서는 로딩바 없이 직접 처리
+		for i, file := range targetFiles {
+			fmt.Printf("파일 처리 중: %s (%d/%d)\n", file.Name, i+1, len(targetFiles))
+
+			events, err := sqlExtractor.ExtractFromSingleFile(file)
+
+			if err != nil {
+				fmt.Printf("파일 %s 처리 실패: %v (계속 진행)\n", file.Name, err)
+			} else {
+				allEvents = append(allEvents, events...)
+				eventCount := 0
+				if events != nil {
+					eventCount = len(events)
+				}
+				fmt.Printf("파일 완료: %s (%d개 이벤트)\n", file.Name, eventCount)
+			}
+		}
 	}
 
-	// 중복 이벤트 제거
-	uniqueEvents := ba.removeDuplicateEvents(events)
+	if len(allEvents) == 0 {
+		if !ba.Config.Verbose {
+			bar.Finish()
+		}
+		fmt.Println("\n\n지정된 조건에 맞는 SQL 이벤트를 찾을 수 없습니다.")
+		return nil
+	}
+
+	if !ba.Config.Verbose {
+		// 남은 진행률 채우기 (100%까지) - 지연 없음
+		currentProgress := 15 + (80 / len(targetFiles) * len(targetFiles)) // MySQL 연결(5) + 파일 검색(10) + 파일 처리(80)
+		remaining := 100 - currentProgress
+		if remaining > 0 {
+			for i := 0; i < remaining; i++ {
+				bar.Add(1)
+				if i < remaining/2 {
+					bar.Describe(fmt.Sprintf("결과 정리 중... (총 %d개 이벤트)", len(allEvents)))
+				} else {
+					bar.Describe("분석 완료")
+				}
+			}
+		}
+	} else {
+		fmt.Printf("결과 정리 중... (총 %d개 이벤트)\n", len(allEvents))
+	}
+
+	uniqueEvents, duplicateCount := ba.removeDuplicateEvents(allEvents)
 
 	if ba.Config.Verbose {
-		logrus.Debugf("중복 제거 전: %d개 이벤트, 중복 제거 후: %d개 이벤트\n", len(events), len(uniqueEvents))
+		fmt.Printf("중복 제거 전: %d개 이벤트, 중복 제거 후: %d개 이벤트\n", len(allEvents), len(uniqueEvents))
 	}
 
-	// 결과 출력
-	return ba.outputResults(uniqueEvents)
+	// 진행률바 완료
+	if !ba.Config.Verbose {
+		bar.Finish()
+	} else {
+		fmt.Println("분석 완료")
+	}
+
+	// 결과 출력 (진행률바 완료 후, 개행 추가)
+	fmt.Println() // 개행 추가
+	err = ba.outputResults(uniqueEvents)
+	if err != nil {
+		return fmt.Errorf("결과 출력 실패: %v", err)
+	}
+
+	fmt.Printf("\n>> 총 %d개의 고유한 SQL 이벤트를 발견했습니다.\n", len(uniqueEvents))
+	if duplicateCount > 0 {
+		fmt.Printf(">> 중복 제거: %d개 → %d개 (총 %d개 중복 이벤트 제거)\n", len(allEvents), len(uniqueEvents), duplicateCount)
+	} else {
+		fmt.Printf(">> 중복 제거: %d개 → %d개 (중복 없음)\n", len(allEvents), len(uniqueEvents))
+	}
+
+	return nil
 }
 
 // MySQL 서버에 연결
@@ -172,7 +330,7 @@ func (ba *BinlogAnalyzer) outputResults(events []config.SQLEvent) error {
 	green := "\033[32m"
 	reset := "\033[0m"
 
-	fmt.Fprintf(output, "%s# Binary Log Analysis Results\n", green)
+	fmt.Fprintf(output, "%s\n# Binary Log Analysis Results\n", green)
 	fmt.Fprintf(output, "# Time Range: %s ~ %s\n",
 		ba.Config.StartTime.Format("2006-01-02 15:04:05"),
 		ba.Config.EndTime.Format("2006-01-02 15:04:05"))
@@ -182,6 +340,7 @@ func (ba *BinlogAnalyzer) outputResults(events []config.SQLEvent) error {
 		fmt.Fprintf(output, "# at %d\n", event.Position)
 		fmt.Fprintf(output, "#%s server id %d  end_log_pos %d\n",
 			event.Timestamp.Format("060102 15:04:05"), event.ServerId, event.Position)
+		fmt.Fprintf(output, "# Binary Log File: %s\n", event.Filename)
 
 		if event.Database != "" {
 			fmt.Fprintf(output, "use %s;\n", event.Database)
@@ -199,22 +358,93 @@ func (ba *BinlogAnalyzer) outputResults(events []config.SQLEvent) error {
 	return nil
 }
 
-// 중복 이벤트 제거 (end_log_pos + timestamp 기준)
-func (ba *BinlogAnalyzer) removeDuplicateEvents(events []config.SQLEvent) []config.SQLEvent {
-	seen := make(map[string]bool)
-	var uniqueEvents []config.SQLEvent
+// 중복 이벤트 제거 (end_log_pos + timestamp 기준, 원본 파일 우선)
+func (ba *BinlogAnalyzer) removeDuplicateEvents(events []config.SQLEvent) ([]config.SQLEvent, int) {
+	// 이벤트를 파일명별로 그룹화하여 원본 파일 우선순위 결정
+	eventGroups := make(map[string][]config.SQLEvent) // key: position_timestamp
 
 	for _, event := range events {
-		// 고유키: end_log_pos + timestamp 조합
 		key := fmt.Sprintf("%d_%s", event.Position, event.Timestamp)
+		eventGroups[key] = append(eventGroups[key], event)
+	}
 
-		if !seen[key] {
-			seen[key] = true
-			uniqueEvents = append(uniqueEvents, event)
-		} else if ba.Config.Verbose {
-			logrus.Debugf("중복 이벤트 제거: pos=%d, time=%s\n", event.Position, event.Timestamp)
+	var uniqueEvents []config.SQLEvent
+	duplicateCount := 0
+
+	for _, group := range eventGroups {
+		if len(group) == 1 {
+			// 중복 없는 이벤트
+			uniqueEvents = append(uniqueEvents, group[0])
+		} else {
+			// 중복 이벤트들 - 원본 파일 우선 선택
+			originalEvent := ba.selectOriginalEvent(group)
+			uniqueEvents = append(uniqueEvents, originalEvent)
+			duplicateCount += len(group) - 1
+
+			if ba.Config.Verbose {
+				logrus.Debugf("중복 이벤트 제거: pos=%d, time=%s, 원본=%s, 제거=%d개\n",
+					originalEvent.Position, originalEvent.Timestamp, originalEvent.Filename, len(group)-1)
+			}
 		}
 	}
 
-	return uniqueEvents
+	return uniqueEvents, duplicateCount
+}
+
+// 중복 이벤트들 중에서 원본 이벤트 선택
+func (ba *BinlogAnalyzer) selectOriginalEvent(events []config.SQLEvent) config.SQLEvent {
+	if len(events) == 0 {
+		return config.SQLEvent{}
+	}
+
+	// 1. 먼저 Position이 가장 작은 이벤트를 찾음 (일반적으로 원본 이벤트는 Position이 작음)
+	var originalEvent config.SQLEvent
+	var minPosition uint32 = ^uint32(0) // 최대값으로 초기화
+
+	for _, event := range events {
+		if event.Position < minPosition {
+			minPosition = event.Position
+			originalEvent = event
+		}
+	}
+
+	// 2. Position이 동일한 경우, 파일 번호가 가장 큰 것을 선택 (가장 최신 파일)
+	var candidates []config.SQLEvent
+	for _, event := range events {
+		if event.Position == minPosition {
+			candidates = append(candidates, event)
+		}
+	}
+
+	if len(candidates) > 1 {
+		// Position이 동일한 여러 파일이 있는 경우, 파일 번호가 가장 큰 것 선택
+		var maxFileNum int = 0
+		for _, event := range candidates {
+			fileNum := ba.extractFileNumber(event.Filename)
+			if fileNum > maxFileNum {
+				maxFileNum = fileNum
+				originalEvent = event
+			}
+		}
+	}
+
+	return originalEvent
+}
+
+// 파일명에서 번호 추출 (예: mysql-bin-changelog.000012 -> 12)
+func (ba *BinlogAnalyzer) extractFileNumber(filename string) int {
+	// mysql-bin-changelog.000012 형태에서 000012 부분 추출
+	parts := strings.Split(filename, ".")
+	if len(parts) >= 2 {
+		lastPart := parts[len(parts)-1]
+		// 앞의 0 제거
+		lastPart = strings.TrimLeft(lastPart, "0")
+		if lastPart == "" {
+			lastPart = "0" // 모든 숫자가 0인 경우
+		}
+		if num, err := strconv.Atoi(lastPart); err == nil {
+			return num
+		}
+	}
+	return 999999 // 파싱 실패 시 큰 값 반환
 }

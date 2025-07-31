@@ -30,6 +30,7 @@ func NewSQLExtractor(cfg config.Config) *SQLExtractor {
 		Port:     uint16(cfg.Port),
 		User:     cfg.User,
 		Password: cfg.Password,
+		Logger:   &config.NullLogger{},
 	}
 
 	return &SQLExtractor{
@@ -56,7 +57,7 @@ func (se *SQLExtractor) ExtractSQLEvents(files []config.BinlogFile) ([]config.SQ
 		}
 
 		// 하나의 syncer로 각 파일 처리
-		events, err := se.extractFromSingleFile(file)
+		events, err := se.ExtractFromSingleFile(file)
 		if err != nil {
 			if se.config.Verbose {
 				logrus.Debugf("파일 %s 분석 실패: %v (계속 진행)\n", file.Name, err)
@@ -74,8 +75,8 @@ func (se *SQLExtractor) ExtractSQLEvents(files []config.BinlogFile) ([]config.SQ
 	return allEvents, nil
 }
 
-// 단일 파일에서 SQL 이벤트 추출 (각 파일마다 새로운 syncer 사용)
-func (se *SQLExtractor) extractFromSingleFile(file config.BinlogFile) ([]config.SQLEvent, error) {
+// ExtractFromSingleFile 단일 파일에서 SQL 이벤트 추출 (각 파일마다 새로운 syncer 사용)
+func (se *SQLExtractor) ExtractFromSingleFile(file config.BinlogFile) ([]config.SQLEvent, error) {
 	var events []config.SQLEvent
 
 	// 각 파일마다 새로운 syncer 생성
@@ -86,9 +87,33 @@ func (se *SQLExtractor) extractFromSingleFile(file config.BinlogFile) ([]config.
 		Port:     uint16(se.config.Port),
 		User:     se.config.User,
 		Password: se.config.Password,
+		Logger:   &config.NullLogger{},
 	}
 	syncer := replication.NewBinlogSyncer(cfg)
-	defer syncer.Close()
+
+	// 안전한 syncer 종료를 위한 함수
+	var syncerClosed bool
+	safeSyncerClose := func() {
+		if !syncerClosed {
+			syncerClosed = true
+			// 에러를 무시하고 조용히 닫기
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// panic 무시
+					}
+				}()
+
+				// syncer가 이미 닫혀있는지 확인
+				if syncer != nil {
+					// Close() 호출 전에 잠시 대기
+					time.Sleep(10 * time.Millisecond)
+					syncer.Close()
+				}
+			}()
+		}
+	}
+	defer safeSyncerClose()
 
 	// Binary log 스트리밍 시작
 	streamer, err := syncer.StartSync(mysql.Position{Name: file.Name, Pos: 4})
@@ -96,29 +121,46 @@ func (se *SQLExtractor) extractFromSingleFile(file config.BinlogFile) ([]config.
 		return nil, fmt.Errorf("파일 %s 스트리밍 시작 실패: %v", file.Name, err)
 	}
 
-	// 타임아웃 설정 (파일당 최대 60초)
+	// 타임아웃 설정 (30초로 단축)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	eventCount := 0
-	maxEvents := 10000 // 성능을 위한 제한
+	maxEvents := 10000 // 10000개 → 5000개로 단축 (더 빠른 처리)
+	totalEvents := 0   // 전체 이벤트 카운트 (디버깅용)
 
 	for eventCount < maxEvents {
 		select {
 		case <-ctx.Done():
 			if se.config.Verbose {
-				logrus.Debugf("파일 %s 처리 시간 초과 (60초)\n", file.Name)
+				fmt.Printf("파일 %s 처리 시간 초과 (60초)\n", file.Name)
 			}
+			// 타임아웃 시 안전하게 종료
+			safeSyncerClose()
 			return events, nil
 		default:
-			ev, err := streamer.GetEvent(ctx)
+			// 논블로킹으로 이벤트 가져오기 시도
+			ev, err := func() (*replication.BinlogEvent, error) {
+				defer func() {
+					if r := recover(); r != nil {
+						// panic을 에러로 변환
+						err = fmt.Errorf("syncer panic: %v", r)
+					}
+				}()
+				return streamer.GetEvent(ctx)
+			}()
+
 			if err != nil {
-				// 파일 끝 도달 또는 다른 오류
-				if se.config.Verbose && len(events) == 0 {
-					logrus.Debugf("파일 %s: 이벤트 읽기 완료 또는 오류: %v\n", file.Name, err)
+				// 에러 발생 시 조용히 종료
+				if se.config.Verbose {
+					fmt.Printf("파일 %s: 이벤트 읽기 완료 (총 %d개 이벤트 처리, 조건 맞는 %d개)\n",
+						file.Name, totalEvents, len(events))
 				}
+				safeSyncerClose()
 				return events, nil
 			}
+
+			totalEvents++
 
 			// 시간 필터링
 			eventTime := time.Unix(int64(ev.Header.Timestamp), 0)
@@ -129,28 +171,36 @@ func (se *SQLExtractor) extractFromSingleFile(file config.BinlogFile) ([]config.
 			}
 			// 종료 시간 이후면 해당 파일 처리 완료
 			if eventTime.After(se.config.EndTime) {
+				if se.config.Verbose {
+					fmt.Printf("\n> 파일 %s: 종료 시간 초과 (총 %d개 이벤트 처리, 조건 맞는 %d개)\n",
+						file.Name, totalEvents, len(events))
+				}
+				safeSyncerClose()
 				return events, nil
 			}
 
 			// SQL 이벤트로 변환
-			sqlEvent := se.convertToSQLEvent(ev)
+			sqlEvent := se.convertToSQLEvent(ev, file.Name)
 			if sqlEvent != nil {
 				events = append(events, *sqlEvent)
 			}
 
+			// 실제 처리된 이벤트만 카운트
 			eventCount++
 		}
 	}
 
 	if se.config.Verbose {
-		logrus.Debugf("파일 %s: 최대 이벤트 수(%d) 도달\n", file.Name, maxEvents)
+		fmt.Printf("파일 %s: 최대 이벤트 수(%d) 도달 (총 %d개 이벤트 처리, 조건 맞는 %d개)\n",
+			file.Name, maxEvents, totalEvents, len(events))
 	}
 
+	safeSyncerClose()
 	return events, nil
 }
 
 // BinlogEvent를 SQLEvent로 변환
-func (se *SQLExtractor) convertToSQLEvent(ev *replication.BinlogEvent) *config.SQLEvent {
+func (se *SQLExtractor) convertToSQLEvent(ev *replication.BinlogEvent, filename string) *config.SQLEvent {
 	timestamp := time.Unix(int64(ev.Header.Timestamp), 0)
 
 	switch e := ev.Event.(type) {
@@ -168,11 +218,12 @@ func (se *SQLExtractor) convertToSQLEvent(ev *replication.BinlogEvent) *config.S
 			SQL:       query,
 			ServerId:  ev.Header.ServerID,
 			Position:  ev.Header.LogPos,
+			Filename:  filename,
 		}
 
 	case *replication.RowsEvent:
 		// Row 이벤트 처리
-		return se.handleRowsEvent(ev, e, timestamp)
+		return se.handleRowsEvent(ev, e, timestamp, filename)
 
 	default:
 		// 기타 이벤트는 무시
@@ -181,7 +232,7 @@ func (se *SQLExtractor) convertToSQLEvent(ev *replication.BinlogEvent) *config.S
 }
 
 // Row 이벤트를 SQLEvent로 변환
-func (se *SQLExtractor) handleRowsEvent(ev *replication.BinlogEvent, rowsEvent *replication.RowsEvent, timestamp time.Time) *config.SQLEvent {
+func (se *SQLExtractor) handleRowsEvent(ev *replication.BinlogEvent, rowsEvent *replication.RowsEvent, timestamp time.Time, filename string) *config.SQLEvent {
 	var eventType string
 	var sql string
 
@@ -206,6 +257,7 @@ func (se *SQLExtractor) handleRowsEvent(ev *replication.BinlogEvent, rowsEvent *
 		SQL:       sql,
 		ServerId:  ev.Header.ServerID,
 		Position:  ev.Header.LogPos,
+		Filename:  filename,
 	}
 }
 

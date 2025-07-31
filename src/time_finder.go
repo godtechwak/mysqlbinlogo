@@ -75,6 +75,7 @@ func (btf *BinlogTimeFinder) getFileTimeRanges(files []config.BinlogFile) ([]Fil
 		Port:     uint16(btf.config.Port),
 		User:     btf.config.User,
 		Password: btf.config.Password,
+		Logger:   &config.NullLogger{},
 	}
 
 	syncer := replication.NewBinlogSyncer(cfg)

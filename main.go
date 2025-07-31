@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"log"
 	"mysqlbinlogo/config"
 	"mysqlbinlogo/src"
 
@@ -26,7 +27,18 @@ var (
 
 func main() {
 	// go-mysql 라이브러리의 로그를 완전히 숨김
-	logrus.SetOutput(io.Discard)
+	os.Setenv("GO_MYSQL_LOG_LEVEL", "fatal")
+	os.Setenv("GOMAXPROCS", "4") // CPU 사용량 제한으로 안정성 향상
+	os.Setenv("LOG_LEVEL", "fatal")
+	os.Setenv("DEBUG", "false")
+	os.Setenv("VERBOSE", "false")
+
+	// 모든 로깅 시스템 억제
+	log.SetOutput(io.Discard)
+	log.SetFlags(0)
+
+	logrus.SetOutput(os.Stderr)        // verbose 로그를 위해 stderr로 변경
+	logrus.SetLevel(logrus.DebugLevel) // Debug 레벨로 변경하여 verbose 로그 허용
 
 	var rootCmd = &cobra.Command{
 		Use:   "mysqlbinlogo",

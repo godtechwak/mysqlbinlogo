@@ -5,11 +5,10 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/sirupsen/logrus"
-
 	"mysqlbinlogo/config"
 
 	"github.com/go-mysql-org/go-mysql/replication"
+	"github.com/sirupsen/logrus"
 )
 
 // 파일 검색 작업
@@ -83,24 +82,27 @@ func (btf *BinlogTimeFinder) FindTargetFilesConcurrent(files []config.BinlogFile
 func (btf *BinlogTimeFinder) searchWorker(jobs <-chan FileSearchJob, results chan<- FileSearchResult, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	// 각 워커마다 독립적인 syncer 생성
-	cfg := replication.BinlogSyncerConfig{
-		ServerID: 100,
-		Flavor:   "mysql",
-		Host:     btf.config.Host,
-		Port:     uint16(btf.config.Port),
-		User:     btf.config.User,
-		Password: btf.config.Password,
-	}
-	syncer := replication.NewBinlogSyncer(cfg)
-	defer syncer.Close()
-
 	for job := range jobs {
 		if btf.config.Verbose {
 			logrus.Debugf("워커에서 파일 %d/%d 검사 중: %s\n", job.Index+1, cap(results), job.File.Name)
 		}
 
+		// 각 파일마다 새로운 syncer 생성 (공유 문제 해결)
+		cfg := replication.BinlogSyncerConfig{
+			ServerID: 100,
+			Flavor:   "mysql",
+			Host:     btf.config.Host,
+			Port:     uint16(btf.config.Port),
+			User:     btf.config.User,
+			Password: btf.config.Password,
+			Logger:   &config.NullLogger{},
+		}
+		syncer := replication.NewBinlogSyncer(cfg)
+
 		timeRange, err := btf.getFileTimeRangeQuick(syncer, job.File)
+
+		// syncer 즉시 닫기
+		syncer.Close()
 
 		result := FileSearchResult{
 			File:      job.File,
@@ -128,6 +130,10 @@ func (btf *BinlogTimeFinder) processSearchResults(results <-chan FileSearchResul
 		allResults = append(allResults, result)
 	}
 
+	if btf.config.Verbose {
+		logrus.Debugf("성공적으로 시간 범위를 확인한 파일: %d개\n", len(allResults))
+	}
+
 	// 파일명으로 순방향 정렬하여 일관된 순서 보장
 	sort.Slice(allResults, func(i, j int) bool {
 		return allResults[i].File.Name < allResults[j].File.Name
@@ -135,6 +141,12 @@ func (btf *BinlogTimeFinder) processSearchResults(results <-chan FileSearchResul
 
 	// 시간 범위 확인 (모든 파일 처리)
 	var targetFiles []config.BinlogFile
+
+	if btf.config.Verbose {
+		logrus.Debugf("검색 시간 범위: %s ~ %s\n",
+			btf.config.StartTime.Format("2006-01-02 15:04:05"),
+			btf.config.EndTime.Format("2006-01-02 15:04:05"))
+	}
 
 	for _, result := range allResults {
 		timeRange := result.TimeRange
