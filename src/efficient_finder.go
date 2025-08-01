@@ -99,14 +99,14 @@ func (btf *BinlogTimeFinder) FindTargetFilesEfficient(files []config.BinlogFile)
 	return targetFiles, nil
 }
 
-// 파일의 시간 범위를 빠르게 확인 (처음 몇 개와 마지막 몇 개 이벤트만)
+// 파일의 시간 범위를 빠르게 확인 (특정 파일만 처리, 다른 파일로 넘어가지 않음)
 func (btf *BinlogTimeFinder) getFileTimeRangeQuick(syncer *replication.BinlogSyncer, file config.BinlogFile) (FileTimeRange, error) {
 	timeRange := FileTimeRange{
 		FileName: file.Name,
 		Size:     file.Size,
 	}
 
-	// Binary log 스트리밍 시작
+	// Binary log 스트리밍 시작 - 특정 파일의 시작 위치에서
 	streamer, err := syncer.StartSync(mysql.Position{Name: file.Name, Pos: 4})
 	if err != nil {
 		return timeRange, fmt.Errorf("스트리밍 시작 실패: %v", err)
@@ -117,7 +117,7 @@ func (btf *BinlogTimeFinder) getFileTimeRangeQuick(syncer *replication.BinlogSyn
 
 	var firstTimestamp, lastTimestamp uint32
 	eventCount := 0
-	maxEvents := 50 // 100개 → 50개로 단축 (더 빠른 시간 범위 확인)
+	maxEvents := 50 // 50개 이벤트로 제한
 
 	// 시작 시간 찾기
 	for eventCount < maxEvents {
@@ -138,6 +138,18 @@ func (btf *BinlogTimeFinder) getFileTimeRangeQuick(syncer *replication.BinlogSyn
 				return timeRange, nil
 			}
 
+			// 현재 이벤트가 다른 파일로 넘어갔는지 확인
+			if ev.Header.LogPos > 0 {
+				// 파일 크기를 초과했거나 다른 파일로 넘어간 경우 종료
+				if ev.Header.LogPos > uint32(file.Size) {
+					if btf.config.Verbose {
+						logrus.Debugf("파일 %s 경계 도달, 처리 종료 (LogPos: %d, FileSize: %d)\n",
+							file.Name, ev.Header.LogPos, file.Size)
+					}
+					break
+				}
+			}
+
 			if ev.Header.Timestamp > 0 {
 				if firstTimestamp == 0 {
 					firstTimestamp = ev.Header.Timestamp
@@ -153,9 +165,9 @@ func (btf *BinlogTimeFinder) getFileTimeRangeQuick(syncer *replication.BinlogSyn
 		timeRange.StartTime = time.Unix(int64(firstTimestamp), 0).UTC()
 	}
 
-	// 마지막 이벤트 찾기 (샘플링 방식으로 개선)
+	// 마지막 이벤트 찾기 (샘플링 방식, 파일 경계 내에서만)
 	sampleCount := 0
-	maxSamples := 50 // 50개 → 25개로 단축 (더 빠른 종료 시간 확인)
+	maxSamples := 50
 
 	for sampleCount < maxSamples {
 		select {
@@ -172,6 +184,15 @@ func (btf *BinlogTimeFinder) getFileTimeRangeQuick(syncer *replication.BinlogSyn
 					timeRange.EndTime = time.Unix(int64(lastTimestamp), 0).UTC()
 				}
 				return timeRange, nil
+			}
+
+			// 파일 경계 확인
+			if ev.Header.LogPos > uint32(file.Size) {
+				if btf.config.Verbose {
+					logrus.Debugf("파일 %s 경계 도달, 샘플링 종료 (LogPos: %d, FileSize: %d)\n",
+						file.Name, ev.Header.LogPos, file.Size)
+				}
+				break
 			}
 
 			if ev.Header.Timestamp > 0 {

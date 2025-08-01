@@ -126,8 +126,8 @@ func (se *SQLExtractor) ExtractFromSingleFile(file config.BinlogFile) ([]config.
 	defer cancel()
 
 	eventCount := 0
-	maxEvents := 10000 // 10000개 → 5000개로 단축 (더 빠른 처리)
-	totalEvents := 0   // 전체 이벤트 카운트 (디버깅용)
+	maxEvents := 1000000 // 최대 이벤트 수 제한
+	totalEvents := 0     // 전체 이벤트 카운트 (디버깅용)
 
 	for eventCount < maxEvents {
 		select {
@@ -161,6 +161,19 @@ func (se *SQLExtractor) ExtractFromSingleFile(file config.BinlogFile) ([]config.
 			}
 
 			totalEvents++
+
+			// 파일 경계 확인 - 현재 이벤트가 다른 파일로 넘어갔는지 확인
+			if ev.Header.LogPos > 0 {
+				// 파일 크기를 초과했거나 다른 파일로 넘어간 경우 종료
+				if ev.Header.LogPos > uint32(file.Size) {
+					if se.config.Verbose {
+						fmt.Printf("파일 %s 경계 도달, SQL 추출 종료 (LogPos: %d, FileSize: %d)\n",
+							file.Name, ev.Header.LogPos, file.Size)
+					}
+					safeSyncerClose()
+					return events, nil
+				}
+			}
 
 			// 시간 필터링
 			eventTime := time.Unix(int64(ev.Header.Timestamp), 0)

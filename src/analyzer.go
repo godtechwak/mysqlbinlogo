@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 
@@ -35,12 +36,12 @@ func (ba *BinlogAnalyzer) Analyze() error {
 
 	// verbose 모드가 아닐 때만 로딩바 사용
 	var bar *progressbar.ProgressBar
+	var totalProgressSteps int
 	if !ba.Config.Verbose {
-		// 단일 진행률바 (100단계 = 1%씩)
-		bar = progressbar.NewOptions(100,
+		// 더 부드러운 진행률을 위해 더 많은 단계로 설정 (200단계)
+		bar = progressbar.NewOptions(200,
 			progressbar.OptionSetDescription("분석 진행률"),
 			progressbar.OptionSetWidth(50),
-			progressbar.OptionShowCount(),
 			progressbar.OptionEnableColorCodes(false),
 			progressbar.OptionSetTheme(progressbar.Theme{
 				Saucer:        "█",
@@ -50,11 +51,12 @@ func (ba *BinlogAnalyzer) Analyze() error {
 				BarEnd:        "]",
 			}),
 		)
+		totalProgressSteps = 150 // 파일 처리용 진행률 단계 수
 	}
 
-	// 1. MySQL 연결 (5%)
+	// 1. MySQL 연결 (10%)
 	if !ba.Config.Verbose {
-		for i := 0; i < 3; i++ {
+		for i := 0; i < 6; i++ {
 			bar.Add(1)
 			bar.Describe("MySQL 연결 중...")
 		}
@@ -66,7 +68,7 @@ func (ba *BinlogAnalyzer) Analyze() error {
 	defer ba.conn.Close()
 
 	if !ba.Config.Verbose {
-		for i := 0; i < 2; i++ {
+		for i := 0; i < 4; i++ {
 			bar.Add(1)
 			bar.Describe("MySQL 연결 완료")
 		}
@@ -74,9 +76,9 @@ func (ba *BinlogAnalyzer) Analyze() error {
 		fmt.Println("MySQL 연결 완료")
 	}
 
-	// 2. Binary log 파일 목록 가져오기 및 대상 파일 검색 (10%)
+	// 2. Binary log 파일 목록 가져오기 및 대상 파일 검색 (20%)
 	if !ba.Config.Verbose {
-		for i := 0; i < 5; i++ {
+		for i := 0; i < 10; i++ {
 			bar.Add(1)
 			bar.Describe("바이너리 로그 파일 검색 중...")
 		}
@@ -106,7 +108,7 @@ func (ba *BinlogAnalyzer) Analyze() error {
 	}
 
 	if !ba.Config.Verbose {
-		for i := 0; i < 5; i++ {
+		for i := 0; i < 10; i++ {
 			bar.Add(1)
 			bar.Describe("파일 검색 완료")
 		}
@@ -138,9 +140,10 @@ func (ba *BinlogAnalyzer) Analyze() error {
 	var allEvents []config.SQLEvent
 
 	if !ba.Config.Verbose {
-		progressPerFile := 80 / len(targetFiles) // 80%를 파일 개수로 나눔
-		if progressPerFile < 5 {
-			progressPerFile = 5
+		// 더 부드러운 진행률을 위해 더 많은 단계로 나눔
+		progressPerFile := totalProgressSteps / len(targetFiles) // 각 파일당 진행률 단계
+		if progressPerFile < 2 {
+			progressPerFile = 2 // 최소 2단계는 보장
 		}
 
 		// 병렬 처리를 위한 채널과 고루틴 사용
@@ -159,21 +162,26 @@ func (ba *BinlogAnalyzer) Analyze() error {
 		// 작업 채널 생성
 		fileChan := make(chan config.BinlogFile, len(targetFiles))
 
-		// 워커 고루틴들 시작
+		// 워커 고루틴들 시작 - 동적 작업 분배 방식
 		var wg sync.WaitGroup
 		for i := 0; i < workerCount; i++ {
 			wg.Add(1)
-			go func() {
+			go func(workerId int) {
 				defer wg.Done()
+				// 각 워커가 작업 채널에서 파일을 가져와서 처리
 				for file := range fileChan {
-					events, err := sqlExtractor.ExtractFromSingleFile(file)
+					// 각 워커별로 독립적인 SQL 추출기 생성
+					workerExtractor := NewSQLExtractor(ba.Config)
+					events, err := workerExtractor.ExtractFromSingleFile(file)
+					workerExtractor.Close() // 즉시 종료
+
 					if err != nil {
 						errorChan <- err
 					} else {
 						eventChan <- events
 					}
 				}
-			}()
+			}(i)
 		}
 
 		// 파일들을 작업 채널에 전송
@@ -199,10 +207,17 @@ func (ba *BinlogAnalyzer) Analyze() error {
 				allEvents = append(allEvents, events...)
 				processedFiles++
 
-				// 진행률 업데이트
+				// 더 부드러운 진행률 업데이트
 				for j := 0; j < progressPerFile; j++ {
 					bar.Add(1)
-					bar.Describe(fmt.Sprintf("파일 완료: %d/%d (%d개 이벤트)", processedFiles, len(targetFiles), len(events)))
+					// 진행률 메시지도 더 부드럽게 업데이트
+					if j == 0 {
+						bar.Describe(fmt.Sprintf("파일 완료: %d/%d (%d개 이벤트)", processedFiles, len(targetFiles), len(events)))
+					} else {
+						bar.Describe(fmt.Sprintf("처리 중... (%d개 이벤트)", len(events)))
+					}
+					// 약간의 지연으로 더 부드러운 느낌
+					time.Sleep(5 * time.Millisecond)
 				}
 			case <-errorChan:
 				processedFiles++
@@ -210,6 +225,7 @@ func (ba *BinlogAnalyzer) Analyze() error {
 				for j := 0; j < progressPerFile; j++ {
 					bar.Add(1)
 					bar.Describe(fmt.Sprintf("파일 실패: %d/%d", processedFiles, len(targetFiles)))
+					time.Sleep(5 * time.Millisecond)
 				}
 			}
 		}
@@ -242,9 +258,9 @@ func (ba *BinlogAnalyzer) Analyze() error {
 	}
 
 	if !ba.Config.Verbose {
-		// 남은 진행률 채우기 (100%까지) - 지연 없음
-		currentProgress := 15 + (80 / len(targetFiles) * len(targetFiles)) // MySQL 연결(5) + 파일 검색(10) + 파일 처리(80)
-		remaining := 100 - currentProgress
+		// 남은 진행률 채우기 (200%까지) - 지연 없음
+		currentProgress := 30 + (totalProgressSteps / len(targetFiles) * len(targetFiles)) // MySQL 연결(10) + 파일 검색(20) + 파일 처리(150)
+		remaining := 200 - currentProgress
 		if remaining > 0 {
 			for i := 0; i < remaining; i++ {
 				bar.Add(1)
