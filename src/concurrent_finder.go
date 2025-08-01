@@ -102,7 +102,7 @@ func (btf *BinlogTimeFinder) searchWorker(jobs <-chan FileSearchJob, results cha
 		timeRange, err := btf.getFileTimeRangeQuick(syncer, job.File)
 
 		// syncer 즉시 닫기
-		syncer.Close()
+		//syncer.Close()
 
 		result := FileSearchResult{
 			File:      job.File,

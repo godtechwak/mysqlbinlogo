@@ -52,7 +52,7 @@ func (btf *BinlogTimeFinder) FindTargetFilesEfficient(files []config.BinlogFile)
 		syncer := replication.NewBinlogSyncer(cfg)
 
 		timeRange, err := btf.getFileTimeRangeQuick(syncer, file)
-		syncer.Close() // 즉시 종료
+		// syncer.Close() // 즉시 종료
 
 		if err != nil {
 			if btf.config.Verbose {

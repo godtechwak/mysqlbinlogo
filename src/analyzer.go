@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/sirupsen/logrus"
 
@@ -142,29 +143,74 @@ func (ba *BinlogAnalyzer) Analyze() error {
 			progressPerFile = 5
 		}
 
-		for i, file := range targetFiles {
-			// 파일 처리 시작 (지연 없음)
-			for j := 0; j < progressPerFile/2; j++ {
-				bar.Add(1)
-				bar.Describe(fmt.Sprintf("파일 처리 중: %s (%d/%d)", file.Name, i+1, len(targetFiles)))
+		// 병렬 처리를 위한 채널과 고루틴 사용
+		eventChan := make(chan []config.SQLEvent, len(targetFiles))
+		errorChan := make(chan error, len(targetFiles))
+
+		// 워커 수 결정 (파일 수와 설정된 워커 수 중 작은 값)
+		workerCount := ba.Config.Workers
+		if workerCount > len(targetFiles) {
+			workerCount = len(targetFiles)
+		}
+		if workerCount < 1 {
+			workerCount = 1
+		}
+
+		// 작업 채널 생성
+		fileChan := make(chan config.BinlogFile, len(targetFiles))
+
+		// 워커 고루틴들 시작
+		var wg sync.WaitGroup
+		for i := 0; i < workerCount; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for file := range fileChan {
+					events, err := sqlExtractor.ExtractFromSingleFile(file)
+					if err != nil {
+						errorChan <- err
+					} else {
+						eventChan <- events
+					}
+				}
+			}()
+		}
+
+		// 파일들을 작업 채널에 전송
+		go func() {
+			defer close(fileChan)
+			for _, file := range targetFiles {
+				fileChan <- file
 			}
+		}()
 
-			events, err := sqlExtractor.ExtractFromSingleFile(file)
+		// 결과 수집 고루틴
+		go func() {
+			wg.Wait()
+			close(eventChan)
+			close(errorChan)
+		}()
 
-			if err != nil {
-				// 에러는 조용히 무시
-			} else {
+		// 진행률 업데이트와 결과 수집
+		processedFiles := 0
+		for processedFiles < len(targetFiles) {
+			select {
+			case events := <-eventChan:
 				allEvents = append(allEvents, events...)
-			}
+				processedFiles++
 
-			// 파일 처리 완료 (지연 없음)
-			eventCount := 0
-			if events != nil {
-				eventCount = len(events)
-			}
-			for j := 0; j < progressPerFile/2; j++ {
-				bar.Add(1)
-				bar.Describe(fmt.Sprintf("파일 완료: %s (%d개 이벤트)", file.Name, eventCount))
+				// 진행률 업데이트
+				for j := 0; j < progressPerFile; j++ {
+					bar.Add(1)
+					bar.Describe(fmt.Sprintf("파일 완료: %d/%d (%d개 이벤트)", processedFiles, len(targetFiles), len(events)))
+				}
+			case <-errorChan:
+				processedFiles++
+				// 에러는 조용히 무시하고 진행률만 업데이트
+				for j := 0; j < progressPerFile; j++ {
+					bar.Add(1)
+					bar.Describe(fmt.Sprintf("파일 실패: %d/%d", processedFiles, len(targetFiles)))
+				}
 			}
 		}
 	} else {
