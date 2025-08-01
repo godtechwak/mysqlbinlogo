@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"mysqlbinlogo/config"
 
@@ -78,50 +79,6 @@ func (btf *BinlogTimeFinder) FindTargetFilesConcurrent(files []config.BinlogFile
 	return btf.processSearchResults(results, len(files))
 }
 
-// 순차적 파일 검색 워커 - 각 워커가 특정 파일부터 시작해서 순차적으로 처리
-func (btf *BinlogTimeFinder) searchWorkerSequential(files []config.BinlogFile, workerId, workerCount int, results chan<- FileSearchResult, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	// 각 워커가 처리할 파일들을 순차적으로 할당
-	// 워커 0: 파일 0, 5, 10, ...
-	// 워커 1: 파일 1, 6, 11, ...
-	// 워커 2: 파일 2, 7, 12, ...
-	// ...
-	for i := workerId; i < len(files); i += workerCount {
-		file := files[i]
-
-		if btf.config.Verbose {
-			logrus.Debugf("워커 %d에서 파일 %d/%d 검사 중: %s\n", workerId+1, i+1, len(files), file.Name)
-		}
-
-		// 각 파일마다 새로운 syncer 생성 (독립적인 연결 보장)
-		cfg := replication.BinlogSyncerConfig{
-			ServerID: uint32(100 + workerId), // 워커별로 다른 ServerID 사용
-			Flavor:   "mysql",
-			Host:     btf.config.Host,
-			Port:     uint16(btf.config.Port),
-			User:     btf.config.User,
-			Password: btf.config.Password,
-			Logger:   &config.NullLogger{},
-		}
-		syncer := replication.NewBinlogSyncer(cfg)
-
-		timeRange, err := btf.getFileTimeRangeQuick(syncer, file)
-
-		// syncer 즉시 닫기 (리소스 정리)
-		//syncer.Close()
-
-		result := FileSearchResult{
-			File:      file,
-			TimeRange: timeRange,
-			Index:     i,
-			Error:     err,
-		}
-
-		results <- result
-	}
-}
-
 // 동적 파일 검색 워커 - 작업이 끝난 워커가 남은 파일들을 처리
 func (btf *BinlogTimeFinder) searchWorkerDynamic(jobs <-chan FileSearchJob, results chan<- FileSearchResult, wg *sync.WaitGroup, workerId int) {
 	defer wg.Done()
@@ -143,7 +100,25 @@ func (btf *BinlogTimeFinder) searchWorkerDynamic(jobs <-chan FileSearchJob, resu
 		}
 		syncer := replication.NewBinlogSyncer(cfg)
 
-		timeRange, err := btf.getFileTimeRangeQuick(syncer, job.File)
+		// 재시도 로직으로 안정성 향상
+		var timeRange FileTimeRange
+		var err error
+		maxRetries := 10
+
+		for retry := 0; retry < maxRetries; retry++ {
+			timeRange, err = btf.getFileTimeRangeQuick(syncer, job.File)
+			if err == nil {
+				break
+			}
+
+			if retry < maxRetries-1 {
+				if btf.config.Verbose {
+					logrus.Debugf("워커 %d에서 파일 %s 재시도 중 (%d/%d): %v\n", workerId, job.File.Name, retry+1, maxRetries, err)
+				}
+				// 잠시 대기 후 재시도
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
 
 		// syncer 즉시 닫기 (리소스 정리)
 		//syncer.Close()

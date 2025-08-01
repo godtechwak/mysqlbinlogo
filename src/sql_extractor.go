@@ -165,13 +165,18 @@ func (se *SQLExtractor) ExtractFromSingleFile(file config.BinlogFile) ([]config.
 			// 파일 경계 확인 - 현재 이벤트가 다른 파일로 넘어갔는지 확인
 			if ev.Header.LogPos > 0 {
 				// 파일 크기를 초과했거나 다른 파일로 넘어간 경우 종료
-				if ev.Header.LogPos > uint32(file.Size) {
-					if se.config.Verbose {
-						fmt.Printf("파일 %s 경계 도달, SQL 추출 종료 (LogPos: %d, FileSize: %d)\n",
-							file.Name, ev.Header.LogPos, file.Size)
+				// LogPos는 이벤트의 끝 위치이므로 파일 크기보다 클 수 있음
+				// 대신 이벤트 크기를 고려하여 판단
+				if ev.Header.LogPos > uint32(file.Size) && ev.Header.EventSize > 0 {
+					// 이벤트 크기가 파일 크기를 초과하는 경우에만 종료
+					if ev.Header.LogPos-ev.Header.EventSize > uint32(file.Size) {
+						if se.config.Verbose {
+							fmt.Printf("파일 %s 경계 도달, SQL 추출 종료 (LogPos: %d, EventSize: %d, FileSize: %d)\n",
+								file.Name, ev.Header.LogPos, ev.Header.EventSize, file.Size)
+						}
+						safeSyncerClose()
+						return events, nil
 					}
-					safeSyncerClose()
-					return events, nil
 				}
 			}
 

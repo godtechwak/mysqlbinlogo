@@ -2,6 +2,7 @@ package src
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sort"
 	"time"
@@ -13,6 +14,28 @@ import (
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
 )
+
+// 시간 기반 binary log 파일 찾기
+type BinlogTimeFinder struct {
+	conn   *sql.DB
+	config config.Config
+}
+
+// 새 타임 파인더 생성
+func NewBinlogTimeFinder(conn *sql.DB, cfg config.Config) *BinlogTimeFinder {
+	return &BinlogTimeFinder{
+		conn:   conn,
+		config: cfg,
+	}
+}
+
+// 파일의 시간 범위 정보
+type FileTimeRange struct {
+	FileName  string
+	Size      int64
+	StartTime time.Time
+	EndTime   time.Time
+}
 
 // 효율적으로 시간 범위에 해당하는 파일들만 선별
 func (btf *BinlogTimeFinder) FindTargetFilesEfficient(files []config.BinlogFile) ([]config.BinlogFile, error) {
@@ -52,7 +75,6 @@ func (btf *BinlogTimeFinder) FindTargetFilesEfficient(files []config.BinlogFile)
 		syncer := replication.NewBinlogSyncer(cfg)
 
 		timeRange, err := btf.getFileTimeRangeQuick(syncer, file)
-		// syncer.Close() // 즉시 종료
 
 		if err != nil {
 			if btf.config.Verbose {
@@ -112,7 +134,7 @@ func (btf *BinlogTimeFinder) getFileTimeRangeQuick(syncer *replication.BinlogSyn
 		return timeRange, fmt.Errorf("스트리밍 시작 실패: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
 	var firstTimestamp, lastTimestamp uint32
@@ -141,12 +163,17 @@ func (btf *BinlogTimeFinder) getFileTimeRangeQuick(syncer *replication.BinlogSyn
 			// 현재 이벤트가 다른 파일로 넘어갔는지 확인
 			if ev.Header.LogPos > 0 {
 				// 파일 크기를 초과했거나 다른 파일로 넘어간 경우 종료
-				if ev.Header.LogPos > uint32(file.Size) {
-					if btf.config.Verbose {
-						logrus.Debugf("파일 %s 경계 도달, 처리 종료 (LogPos: %d, FileSize: %d)\n",
-							file.Name, ev.Header.LogPos, file.Size)
+				// LogPos는 이벤트의 끝 위치이므로 파일 크기보다 클 수 있음
+				// 대신 이벤트 크기를 고려하여 판단
+				if ev.Header.LogPos > uint32(file.Size) && ev.Header.EventSize > 0 {
+					// 이벤트 크기가 파일 크기를 초과하는 경우에만 종료
+					if ev.Header.LogPos-ev.Header.EventSize > uint32(file.Size) {
+						if btf.config.Verbose {
+							logrus.Debugf("파일 %s 경계 도달, 처리 종료 (LogPos: %d, EventSize: %d, FileSize: %d)\n",
+								file.Name, ev.Header.LogPos, ev.Header.EventSize, file.Size)
+						}
+						break
 					}
-					break
 				}
 			}
 
@@ -187,12 +214,15 @@ func (btf *BinlogTimeFinder) getFileTimeRangeQuick(syncer *replication.BinlogSyn
 			}
 
 			// 파일 경계 확인
-			if ev.Header.LogPos > uint32(file.Size) {
-				if btf.config.Verbose {
-					logrus.Debugf("파일 %s 경계 도달, 샘플링 종료 (LogPos: %d, FileSize: %d)\n",
-						file.Name, ev.Header.LogPos, file.Size)
+			if ev.Header.LogPos > uint32(file.Size) && ev.Header.EventSize > 0 {
+				// 이벤트 크기가 파일 크기를 초과하는 경우에만 종료
+				if ev.Header.LogPos-ev.Header.EventSize > uint32(file.Size) {
+					if btf.config.Verbose {
+						logrus.Debugf("파일 %s 경계 도달, 샘플링 종료 (LogPos: %d, EventSize: %d, FileSize: %d)\n",
+							file.Name, ev.Header.LogPos, ev.Header.EventSize, file.Size)
+					}
+					break
 				}
-				break
 			}
 
 			if ev.Header.Timestamp > 0 {
